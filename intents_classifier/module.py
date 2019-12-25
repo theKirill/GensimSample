@@ -8,7 +8,7 @@ import pymorphy2
 import pickle
 import gensim.downloader
 import os.path
-
+import typing
 
 __EMBED_SIZE = 300
 __NUM_FILTERS = 512
@@ -22,43 +22,75 @@ __maxlen_path = 'maxlen.bin'
 
 # Обучение модели. ВХОД: requests - список (list) всех запросов, category_ids - список (list) всех id запросов
 # ВЫХОД: история обучения модели
-def fit(requests, category_ids):
-    requests, category_ids = sklearn.utils.shuffle(requests, category_ids) #перемешиваем данные
+def fit(requests: typing.List[str], category_ids: typing.List[str]) -> keras.callbacks.callbacks.History():
+    __save_category_ids(category_ids)  # сохраняем исходные id
 
-    sentences = numpy.array([__tokenize(request) for request in requests]) #предобработка
+    category_ids = __get_consecutive_indices(category_ids)  # получаем последовательные id для корректной работы
+    requests, category_ids = sklearn.utils.shuffle(requests, category_ids)  # перемешиваем данные
+
+    sentences = numpy.array([__tokenize(request) for request in requests])  # предобработка
+    print(sentences)
     counter, maxlen = __get_counter_and_maxlen(sentences)
     vocab_sz = len(counter) + 1  # кол-во различных слов в sentences
     embedding_weights = __get_embedding_weights(counter, vocab_sz)
-
     X_train = __get_X_train(sentences, maxlen)
     y_train = keras.utils.to_categorical(category_ids)
-
     keras_model = __get_model(vocab_sz, maxlen, embedding_weights, classes_count=len(numpy.unique(category_ids)))
+
     history = keras_model.fit(X_train, y_train, batch_size=__BATCH_SIZE,
                               epochs=__NUM_EPOCHS,
                               callbacks=[keras.callbacks.ModelCheckpoint('keras_model.h5', save_best_only=True)],
-                              validation_split=0.2, verbose = 0)
+                              validation_split=0.2, verbose=0)
+
     return history
+
 
 # Предсказание id запроса. ВХОД: request - строка, запрос
 # ВЫХОД: id запроса request (>= 0 или -1, если модель не была обучена)
-def predict(request):
+def predict(request: str) -> int:
     if os.path.isfile(__keras_model_path) and os.path.isfile(__tokenizer_path) and os.path.isfile(__maxlen_path):
-    	keras_model = keras.models.load_model(__keras_model_path) #получаем сохранённую ранее модель
+        keras_model = keras.models.load_model(__keras_model_path)  # получаем сохранённую ранее модель
 
-    	tokenizer = __get_tokenizer() #получаем сохранённый ранее токенайзер
+        tokenizer = __get_tokenizer()  # получаем сохранённый ранее токенайзер
 
-    	sentences = [__tokenize(request)]
-    	X_predict = tokenizer.texts_to_sequences(sentences)
-    	X_predict = keras.preprocessing.sequence.pad_sequences(X_predict, maxlen=__get_maxlen())
+        sentences = [__tokenize(request)]
+        X_predict = tokenizer.texts_to_sequences(sentences)
+        X_predict = keras.preprocessing.sequence.pad_sequences(X_predict, maxlen=__get_maxlen())
 
-    	prediction = keras_model.predict_classes(X_predict)
+        prediction = keras_model.predict_classes(X_predict)
+        indices_unique = numpy.unique(__get_category_ids())  # получаем исходные id
 
-    	return prediction[0]
+        return indices_unique[prediction[0]]
     else:
-      print('Do not exists keras_model or another necessary files. For beginning, train the model (use fit)')
-      
-      return -1
+        print('Do not exists keras_model or another necessary files. For beginning, train the model (use fit)')
+
+        return -1
+
+
+# Получение последовательных id из категорий интентов
+def __get_consecutive_indices(category_ids):
+    consecutive_indices = []
+    unique_id = numpy.unique(category_ids).tolist()
+
+    for id in category_ids:
+        consecutive_indices.append(unique_id.index(id))
+
+    return consecutive_indices
+
+
+# Сохранение исходных id категории
+def __save_category_ids(category_ids):
+    with open('indices.pickle', 'wb') as f:
+        pickle.dump(category_ids, f)
+
+
+# Получение исходных id категории
+def __get_category_ids():
+    with open('indices.pickle', 'rb') as f:
+        indices = pickle.load(f)
+
+    return indices
+
 
 # Получение векторов слов из word2vec_model
 def __get_embedding_weights(counter, vocab_sz):
@@ -78,6 +110,7 @@ def __get_embedding_weights(counter, vocab_sz):
 
     return embedding_weights
 
+
 # Получение всех слов из предложений sentences + их частоты, максимальной длины предложений
 def __get_counter_and_maxlen(sentences):
     counter = collections.Counter()
@@ -93,12 +126,14 @@ def __get_counter_and_maxlen(sentences):
 
     return counter, maxlen
 
+
 # Методы сохранения, получения maxlen
 
 def __save_maxlen(maxlen):
     f = open(__maxlen_path, 'w')
     f.write(str(maxlen))
     f.close()
+
 
 def __get_maxlen():
     f = open(__maxlen_path, 'r')
@@ -107,16 +142,19 @@ def __get_maxlen():
 
     return maxlen
 
+
 # Преобразование запросов sentences
 def __get_X_train(sentences, maxlen):
     # Создание единого словаря (слово -> число) для преобразования на основе списка текстов sentences
     tokenizer = keras.preprocessing.text.Tokenizer()
     tokenizer.fit_on_texts(sentences)
     X_train = tokenizer.texts_to_sequences(sentences)  # заменяем слова каждого предложения на числа
-    X_train = keras.preprocessing.sequence.pad_sequences(X_train, maxlen=maxlen)  # уравниваем все предложения до размера maxlen
+    X_train = keras.preprocessing.sequence.pad_sequences(X_train,
+                                                         maxlen=maxlen)  # уравниваем все предложения до размера maxlen
     __save_tokenizer(tokenizer)
 
     return X_train
+
 
 # Методы сохранения, получения токенайзера
 
@@ -133,6 +171,7 @@ def __get_tokenizer():
 
     return tokenizer
 
+
 # Предобработка запроса
 def __tokenize(request):
     morph = pymorphy2.MorphAnalyzer()  # для перевода в нормальную форму
@@ -143,6 +182,7 @@ def __tokenize(request):
     output = [__add_part_of_speech(morph, word) for word in without_stop_words]
 
     return output
+
 
 # Добавление к слову части речи
 def __add_part_of_speech(morph, word):
@@ -155,15 +195,15 @@ def __add_part_of_speech(morph, word):
 def __get_model(vocab_sz, maxlen, embedding_weights, classes_count):
     model = keras.models.Sequential()
     model.add(keras.layers.Embedding(vocab_sz, __EMBED_SIZE, input_length=maxlen,
-                        weights=[embedding_weights],
-                        trainable=True))
+                                     weights=[embedding_weights],
+                                     trainable=True))
 
     model.add(keras.layers.Dropout(0.2))
     model.add(keras.layers.Conv1D(50,
-                     3,
-                     padding='valid',
-                     activation='relu',
-                     strides=1))
+                                  3,
+                                  padding='valid',
+                                  activation='relu',
+                                  strides=1))
     model.add(keras.layers.GlobalMaxPooling1D())
     model.add(keras.layers.Dense(250))
     model.add(keras.layers.Dropout(0.2))
